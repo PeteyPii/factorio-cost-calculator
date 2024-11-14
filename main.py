@@ -1,8 +1,14 @@
+import math
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pprint import pprint
-from typing import ClassVar, Dict, List, Optional, Self
+from typing import ClassVar, Dict, List, Optional, Self, Tuple
+
+import gravis as gv
+
+ALLOW_QUALITY = True
+ALLOW_RECYCLING = True
 
 
 @dataclass
@@ -23,6 +29,14 @@ class Item:
     MIN_QUALITY: ClassVar[int] = 1
     MAX_QUALITY: ClassVar[int] = 5
 
+    QUALITY_SUFFIX: ClassVar[Dict[int, str]] = {
+        1: "‧",
+        2: "⁚",
+        3: "⁖",
+        4: "⁘",
+        5: "⁙",
+    }
+
     def __init__(self, name: str, quality: int = MIN_QUALITY, is_fluid: bool = False):
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "quality", quality if not is_fluid else Item.MIN_QUALITY)
@@ -33,6 +47,14 @@ class Item:
             return f"{self.name}"
         else:
             return f"{self.name} q{self.quality}"
+
+    def __str__(self):
+        if self.is_fluid:
+            return f"{self.name}"
+        elif ALLOW_QUALITY:
+            return f"{self.name} {Item.QUALITY_SUFFIX[self.quality]}"
+        else:
+            return f"{self.name}"
 
 
 def Fluid(name: str) -> Item:
@@ -136,7 +158,7 @@ def MakeDefaultConfiguration() -> Configuration:
         ],
         recipes=[
             Recipe(
-                name="water",
+                name="pump_water",
                 time=1,
                 machine="offshore_pump",
                 inputs={},
@@ -144,7 +166,7 @@ def MakeDefaultConfiguration() -> Configuration:
                 recyclable=False,
             ),
             Recipe(
-                name="copper",
+                name="mine_copper",
                 time=1,
                 machine="big_miner",
                 inputs={BASE_RESOURCE: 1},
@@ -153,7 +175,7 @@ def MakeDefaultConfiguration() -> Configuration:
                 recyclable=False,
             ),
             Recipe(
-                name="iron",
+                name="mine_iron",
                 time=1,
                 machine="big_miner",
                 inputs={BASE_RESOURCE: 1},
@@ -162,7 +184,7 @@ def MakeDefaultConfiguration() -> Configuration:
                 recyclable=False,
             ),
             Recipe(
-                name="coal",
+                name="mine_coal",
                 time=1,
                 machine="big_miner",
                 inputs={BASE_RESOURCE: 1},
@@ -171,7 +193,7 @@ def MakeDefaultConfiguration() -> Configuration:
                 recyclable=False,
             ),
             Recipe(
-                name="stone",
+                name="mine_stone",
                 time=1,
                 machine="big_miner",
                 inputs={BASE_RESOURCE: 1},
@@ -180,7 +202,7 @@ def MakeDefaultConfiguration() -> Configuration:
                 recyclable=False,
             ),
             Recipe(
-                "scrap",
+                "mine_scrap",
                 time=0.5,
                 machine="big_miner",
                 inputs={BASE_RESOURCE: 1},
@@ -354,7 +376,7 @@ def MakeDefaultConfiguration() -> Configuration:
                 inputs={
                     Item("processor"): 5,
                     Item("advanced_circuit"): 5,
-                    Item("quality_module_1"): 4,
+                    Item("quality_module_2"): 4,
                     Item("superconductor"): 1,
                 },
                 outputs={Item("quality_module_3"): 1},
@@ -391,24 +413,24 @@ def MakeDefaultConfiguration() -> Configuration:
             7 * Bonus(name="plastic_productivity", prod=0.1),
         ],
         machine_settings_available=[
-            MachineSettings(
-                name="empty",
-                num_beacons=0,
-                is_prod=False,
-                module=ZERO_BONUS,
-            ),
-            MachineSettings(
-                name="prod",
-                num_beacons=0,
-                module=prod_module,
-                is_prod=True,
-            ),
-            MachineSettings(
-                name="speed",
-                num_beacons=0,
-                module=speed_module,
-                is_prod=False,
-            ),
+            # MachineSettings(
+            #     name="empty",
+            #     num_beacons=0,
+            #     is_prod=False,
+            #     module=ZERO_BONUS,
+            # ),
+            # MachineSettings(
+            #     name="prod",
+            #     num_beacons=0,
+            #     module=prod_module,
+            #     is_prod=True,
+            # ),
+            # MachineSettings(
+            #     name="speed",
+            #     num_beacons=0,
+            #     module=speed_module,
+            #     is_prod=False,
+            # ),
             MachineSettings(
                 name="quality",
                 num_beacons=0,
@@ -450,6 +472,7 @@ class Transformation:
     ):
         self.name = name
         self.recipe = recipe
+        self.machine_settings = machine_settings
 
         extra_effects = machine_settings.effect_total(machine)
         for applicable_bonus in recipe.applicable_bonuses:
@@ -591,6 +614,7 @@ class Controller:
         self.machine_time_cost = machine_time_cost
         self.resource_base_cost = resource_base_cost
         self.allow_recycling = allow_recycling
+        self.quality_byproduct_strategy = quality_byproduct_strategy
 
         self.machine_map = {machine.name: machine for machine in config.machines}
         self.global_bonus_map = {bonus.name: bonus for bonus in config.global_bonuses}
@@ -600,7 +624,6 @@ class Controller:
             recipes = generate_recycling_recipes(recipes)
         if allow_quality:
             recipes = generate_quality_recipes(recipes)
-            self.quality_byproduct_strategy = quality_byproduct_strategy
 
         self.recipe_map = {recipe.name: recipe for recipe in recipes}
 
@@ -610,7 +633,10 @@ class Controller:
                 if machine_settings.is_prod and not recipe.can_prod:
                     continue
 
-                if not allow_quality and (machine_settings.module.quality or machine_settings.beacon.effect.quality):
+                if not allow_quality and (
+                    machine_settings.module.quality > 0
+                    or (machine_settings.beacon and machine_settings.beacon.effect.quality > 0)
+                ):
                     continue
 
                 self.transformations.append(
@@ -623,19 +649,20 @@ class Controller:
                     )
                 )
 
-    def compute_all_costs(self, iterations=100):
-        item_costs: Dict[str, float] = {}
+    def compute_all_costs(
+        self, iterations=100
+    ) -> Tuple[Dict[Item, float], Dict[Item, List[Tuple[float, Transformation]]]]:
+        item_costs: Dict[Item, float] = {}
+
         for transformation in self.transformations:
             for item in transformation.inputs_per_sec:
                 item_costs[item] = self.resource_base_cost
             for item in transformation.outputs_per_sec:
                 item_costs[item] = self.resource_base_cost
 
-        best_transform = {}
-
-        def iterate():
+        def iterate(return_transforms: bool = False):
             nonlocal item_costs
-            nonlocal best_transform
+            item_to_weighted_transforms: Dict[Item, List[Tuple[float, Transformation]]] = {}
             new_costs = {}
             for transformation in self.transformations:
                 total_input_cost = sum(
@@ -668,7 +695,11 @@ class Controller:
 
                     if new_item_value < new_costs.get(item, float("inf")):
                         new_costs[item] = new_item_value
-                        best_transform[item] = transformation
+
+                    if return_transforms:
+                        if item not in item_to_weighted_transforms:
+                            item_to_weighted_transforms[item] = []
+                        item_to_weighted_transforms[item].append((new_item_value, transformation))
 
             for item in item_costs:
                 if item not in new_costs:
@@ -676,11 +707,121 @@ class Controller:
             new_costs[BASE_RESOURCE] = self.resource_base_cost
             item_costs = new_costs
 
+            if not return_transforms:
+                return None
+
+            for item, transformation_list in item_to_weighted_transforms.items():
+                transformation_list.sort(key=lambda t: t[0])
+            return item_to_weighted_transforms
+
         for _ in range(iterations):
             iterate()
 
+        item_to_weighted_transforms = iterate(return_transforms=True)
         pprint(item_costs)
-        pprint(best_transform)
+        return item_costs, item_to_weighted_transforms
+
+    def display_graph(
+        self, item_costs: Dict[Item, float], item_to_weighted_transforms: Dict[Item, List[Tuple[float, Transformation]]]
+    ):
+        graph = {
+            "directed": True,
+            "metadata": {
+                "label": "$label",
+                # "arrow_size": 5,
+                # "background_color": "black",
+                # "edge_size": 3,
+                # "edge_label_size": 14,
+                # "edge_label_color": "white",
+                # "node_size": 15,
+                # "node_color": "white",
+                # "node_label_color": "white",
+            },
+        }
+        graph["nodes"] = {
+            f"item={item}": {
+                "label": str(item),
+                "metadata": {
+                    "shape": "circle",
+                    # "hover": "$label",
+                    # "click": "$hover",
+                    "size": 25,
+                    # "size": math.log2(max(2, cost)) * 10,
+                },
+                # "node_hover"
+            }
+            for (item, cost) in item_costs.items()
+        }
+        graph["nodes"].update(
+            {
+                str(f"recipe={recipe.name}"): {
+                    "label": str(recipe.name),
+                    "metadata": {
+                        "shape": "rectangle",
+                    },
+                }
+                for recipe in self.recipe_map.values()
+            }
+        )
+        graph["nodes"].update(
+            {
+                str(f"transformation={transformation.name}"): {
+                    "label": str(transformation.machine_settings.name),
+                    "metadata": {
+                        "shape": "rectangle",
+                    },
+                }
+                for transformation in self.transformations
+            }
+        )
+        edges = []
+        for recipe in self.recipe_map.values():
+            for item in recipe.inputs.keys():
+                edges.append(
+                    {
+                        "source": f"item={item}",
+                        "target": f"recipe={recipe.name}",
+                        "label": "",
+                        "metadata": {},
+                    }
+                )
+
+        for transformation in self.transformations:
+            edges.append(
+                {
+                    "source": f"recipe={transformation.recipe.name}",
+                    "target": f"transformation={transformation.name}",
+                    "label": "",
+                    "metadata": {},
+                }
+            )
+
+        for item, weighted_transforms in item_to_weighted_transforms.items():
+            for i, (cost, transformation) in enumerate(weighted_transforms):
+                edges.append(
+                    {
+                        "source": f"transformation={transformation.name}",
+                        "target": f"item={item}",
+                        "label": f"{cost:0.3f}",
+                        "metadata": {},
+                    }
+                )
+                break
+
+        graph["edges"] = edges
+
+        fig = gv.d3(
+            {"graph": graph},
+            graph_height=1300,
+            show_node_label=True,
+            show_edge_label=True,
+            edge_label_data_source="label",
+            node_label_data_source="label",
+            node_hover_neighborhood=True,
+            use_collision_force=True,
+            # show_details_toggle_button=False,
+        )
+        fig.display()
 
 
 def main():
@@ -688,11 +829,12 @@ def main():
         MakeDefaultConfiguration(),
         resource_base_cost=0,
         machine_time_cost=1,
-        allow_recycling=True,
-        allow_quality=True,
+        allow_recycling=ALLOW_RECYCLING,
+        allow_quality=ALLOW_QUALITY,
         quality_byproduct_strategy=QualityByproductStrategy.COUNT_HIGHER_EQUALLY,
     )
-    controller.compute_all_costs()
+
+    controller.display_graph(*controller.compute_all_costs())
 
 
 if __name__ == "__main__":
