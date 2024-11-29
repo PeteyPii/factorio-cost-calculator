@@ -138,9 +138,10 @@ BASE_RESOURCE = Item("resource", is_fluid=True)
 def MakeDefaultConfiguration() -> Configuration:
 
     speed_module = Bonus(name="speed_3", speed=0.5, quality=-0.15)
-    prod_module = Bonus(name="prod_3", prod=0.1, speed=-0.15)
-    quality_module = Bonus(name="quality_3", quality=0.025, speed=-0.05)
-    # quality_module = Bonus(name="quality_3", quality=0.025 * 2.5, speed=-0.05)
+    # prod_module = Bonus(name="prod_3", prod=0.1, speed=-0.15)
+    prod_module = Bonus(name="prod_3", prod=0.25, speed=-0.15)
+    # quality_module = Bonus(name="quality_3", quality=0.025, speed=-0.05)
+    quality_module = Bonus(name="quality_3", quality=0.062, speed=-0.05)
     config = Configuration(
         name="default",
         machines=[
@@ -149,7 +150,7 @@ def MakeDefaultConfiguration() -> Configuration:
             Machine(name="pumpjack", speed=1, module_slots=2, preferred_beacons=0),
             Machine(name="cryo_plant", speed=2, module_slots=8, preferred_beacons=8),
             Machine(name="oil_refinery", speed=1, module_slots=3, preferred_beacons=8),
-            Machine(name="electro_plant", speed=2, base_prod=1.5, module_slots=5, preferred_beacons=8),
+            Machine(name="electro_plant", speed=2, module_slots=5, preferred_beacons=8, base_prod=1.5),
             Machine(name="chem_plant", speed=1, module_slots=3, preferred_beacons=8),
             Machine(name="assembler_3", speed=1.25, module_slots=4, preferred_beacons=8),
             Machine(name="furnace", speed=2, module_slots=2, preferred_beacons=8),
@@ -198,6 +199,15 @@ def MakeDefaultConfiguration() -> Configuration:
                 machine="big_miner",
                 inputs={BASE_RESOURCE: 1},
                 outputs={Item("stone"): 1},
+                applicable_bonuses=["mining_productivity"],
+                recyclable=False,
+            ),
+            Recipe(
+                name="mine_calcite",
+                time=1,
+                machine="big_miner",
+                inputs={BASE_RESOURCE: 1},
+                outputs={Item("calcite"): 1},
                 applicable_bonuses=["mining_productivity"],
                 recyclable=False,
             ),
@@ -354,6 +364,30 @@ def MakeDefaultConfiguration() -> Configuration:
                 can_prod=False,
             ),
             Recipe(
+                "lds",
+                time=15,
+                machine="assembler_3",
+                inputs={Item("plastic"): 5, Item("steel_plate"): 2, Item("copper_plate"): 20},
+                outputs={Item("lds"): 1},
+                can_prod=True,
+            ),
+            # Recipe(
+            #     "lds_casting",
+            #     time=15,
+            #     machine="foundry",
+            #     inputs={Item("plastic"): 5, Fluid("molten_iron"): 80, Fluid("molten_copper"): 250},
+            #     outputs={Item("lds"): 1},
+            #     can_prod=False,
+            # ),
+            Recipe(
+                "grenade",
+                time=8,
+                machine="assembler_3",
+                inputs={Item("coal"): 10, Item("iron_plate"): 5},
+                outputs={Item("grenade"): 1},
+                can_prod=False,
+            ),
+            Recipe(
                 "quality_module_1",
                 time=15,
                 machine="electro_plant",
@@ -406,11 +440,12 @@ def MakeDefaultConfiguration() -> Configuration:
             ),
         ],
         global_bonuses=[
-            15 * Bonus(name="mining_productivity", prod=0.1),
-            4 * Bonus(name="scrap_productivity", prod=0.1),
-            4 * Bonus(name="steel_productivity", prod=0.1),
-            7 * Bonus(name="processor_productivity", prod=0.1),
-            7 * Bonus(name="plastic_productivity", prod=0.1),
+            17 * Bonus(name="mining_productivity", prod=0.1),
+            10 * Bonus(name="scrap_productivity", prod=0.1),
+            7 * Bonus(name="steel_productivity", prod=0.1),
+            13 * Bonus(name="processor_productivity", prod=0.1),
+            10 * Bonus(name="plastic_productivity", prod=0.1),
+            20 * Bonus(name="lds_productivity", prod=0.1),
         ],
         machine_settings_available=[
             # MachineSettings(
@@ -438,14 +473,14 @@ def MakeDefaultConfiguration() -> Configuration:
                 is_prod=False,
             ),
             MachineSettings(
-                name="full_balanced",
+                name="balanced",
                 num_beacons=None,
                 beacon=Beacon(name="speed", transmission=1.5, effect=2 * speed_module),
                 module=prod_module,
                 is_prod=True,
             ),
             MachineSettings(
-                name="full_speed",
+                name="speed",
                 num_beacons=None,
                 beacon=Beacon(name="speed", transmission=1.5, effect=2 * speed_module),
                 module=speed_module,
@@ -478,7 +513,7 @@ class Transformation:
         for applicable_bonus in recipe.applicable_bonuses:
             extra_effects += global_bonuses.get(applicable_bonus, ZERO_BONUS)
 
-        effective_prod = machine.base_prod + extra_effects.prod
+        effective_prod = min(machine.base_prod + extra_effects.prod, 4.0)
         rate = machine.speed * (1 + extra_effects.speed) / recipe.time
 
         self.inputs_per_sec: ItemCounts = {}
@@ -827,7 +862,7 @@ class Controller:
 def main():
     controller = Controller(
         MakeDefaultConfiguration(),
-        resource_base_cost=0,
+        resource_base_cost=1,
         machine_time_cost=1,
         allow_recycling=ALLOW_RECYCLING,
         allow_quality=ALLOW_QUALITY,
