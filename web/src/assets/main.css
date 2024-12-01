@@ -1,0 +1,10 @@
+@import './base.css';
+
+#app {
+  display: flex;
+  flex-direction: row;
+}
+
+.cm-gutters {
+  display: none;
+}
