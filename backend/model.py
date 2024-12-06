@@ -1,13 +1,21 @@
-import dataclasses
 import itertools
 import json
 import math
-from pprint import pprint
-from typing import Any, ClassVar, Dict, List, Optional, Self, Tuple
+import re
+from typing import Annotated, Any, ClassVar, Optional, Self
+
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    PlainSerializer,
+    WithJsonSchema,
+)
 
 
-@dataclasses.dataclass(frozen=True, order=True, init=False)
-class Item:
+class Item(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     name: str
     quality: int = 1
     is_fluid: bool = False
@@ -15,12 +23,7 @@ class Item:
     MIN_QUALITY: ClassVar[int] = 1
     MAX_QUALITY: ClassVar[int] = 5
 
-    QUALITY_SUFFIX: ClassVar[Dict[int, str]] = {
-        # 1: "‧",
-        # 2: "⁚",
-        # 3: "⁖",
-        # 4: "⁘",
-        # 5: "⁙",
+    QUALITY_SUFFIX: ClassVar[dict[int, str]] = {
         1: "q1",
         2: "q2",
         3: "q3",
@@ -28,37 +31,53 @@ class Item:
         5: "q5",
     }
 
-    def __init__(self, name: str, quality: int = MIN_QUALITY, is_fluid: bool = False):
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "quality", quality if not is_fluid else Item.MIN_QUALITY)
-        object.__setattr__(self, "is_fluid", is_fluid)
-
-    def __repr__(self):
+    def serialize(self) -> str:
         if self.is_fluid:
+            return f"fluid-{self.name}"
+        elif self.quality == 1:
             return f"{self.name}"
-        elif self.quality > Item.MIN_QUALITY:
+        else:
             return f"{self.name}-q{self.quality}"
-        else:
-            return f"{self.name}"
 
-    def __str__(self):
-        if self.is_fluid:
-            return f"{self.name}"
-        elif self.quality > Item.MIN_QUALITY:
-            return f"{self.name}-{Item.QUALITY_SUFFIX[self.quality]}"
-        else:
-            return f"{self.name}"
+    @staticmethod
+    def deserialize(data: Any) -> str:
+        if not isinstance(data, str):
+            return data
+
+        if data.startswith("fluid-"):
+            return Item(name=data.removeprefix("fluid-"), is_fluid=True)
+        match = re.match(r"(.*)-q(\d+)", data)
+        if match is not None:
+            return Item(name=match[1], quality=int(match[2]))
+        return Item(name=data)
+
+    def __str__(self) -> str:
+        return self.serialize()
+
+
+ItemKey = Annotated[
+    Item,
+    BeforeValidator(lambda item: Item.deserialize(item)),
+    PlainSerializer(lambda item: item.serialize(), return_type=str),
+    WithJsonSchema({"type": "string"}, mode="serialization"),
+]
+
+ItemCounts = dict[ItemKey, float]
+
+
+def MakeItem(name: str, quality: int = Item.MIN_QUALITY, is_fluid: bool = False):
+    if is_fluid:
+        return Fluid(name=name)
+    return Item(name=name, quality=quality)
 
 
 def Fluid(name: str) -> Item:
-    return Item(name, is_fluid=True)
+    return Item(name=name, is_fluid=True)
 
 
-ItemCounts = Dict[Item, float]
+class Recipe(BaseModel):
+    model_config = ConfigDict(ser_json_inf_nan="strings")
 
-
-@dataclasses.dataclass
-class Recipe:
     name: str
     category: str
     time: float
@@ -72,12 +91,11 @@ class Recipe:
     is_mining: bool = False
 
 
-@dataclasses.dataclass
-class Bonus:
+class Bonus(BaseModel):
     name: str
-    speed: float = 0
-    productivity: float = 0
-    quality: float = 0
+    speed: float = 0.0
+    productivity: float = 0.0
+    quality: float = 0.0
 
     def __add__(self, other: Self) -> Self:
         return Bonus(
@@ -89,7 +107,10 @@ class Bonus:
 
     def __mul__(self, scale: float) -> Self:
         return Bonus(
-            self.name, speed=self.speed * scale, productivity=self.productivity * scale, quality=self.quality * scale
+            name=self.name,
+            speed=self.speed * scale,
+            productivity=self.productivity * scale,
+            quality=self.quality * scale,
         )
 
     def __rmul__(self, scale: float) -> Self:
@@ -98,22 +119,20 @@ class Bonus:
 
 ZERO_BONUS = Bonus(name="zero")
 
-BonusMap = Dict[str, Bonus]
+BonusMap = dict[str, Bonus]
 
 
-@dataclasses.dataclass
-class Beacon:
+class Beacon(BaseModel):
     name: str
     transmission: float
     effect: Bonus
 
 
-@dataclasses.dataclass
-class Machine:
+class Machine(BaseModel):
     name: str
-    speed: float = 1
+    speed: float = 1.0
     module_slots: int = 0
-    base_effect: Bonus = dataclasses.field(default_factory=lambda: ZERO_BONUS)
+    base_effect: Bonus = ZERO_BONUS
 
     def __lt__(self, other: Self):
         if self.name == "biochamber":
@@ -125,34 +144,36 @@ class Machine:
         return False
 
 
-@dataclasses.dataclass
-class MachineSettings:
+class MachineSettings(BaseModel):
     name: str
     module: Bonus  # only one type of module per machine
     num_beacons: int = 0
     beacon: Optional[Beacon] = None
 
     def effect_total(self, machine: Machine) -> Bonus:
-        effect = self.module * machine.module_slots
+        effect = machine.base_effect + self.module * machine.module_slots
         if self.beacon and self.num_beacons:
             effect += (self.beacon.transmission * (self.num_beacons**0.5)) * self.beacon.effect
         return effect
 
 
-@dataclasses.dataclass
-class Configuration:
+class Configuration(BaseModel):
     name: str
-    recipes: List[Recipe]
-    recipe_bonuses: Dict[str, Bonus]
-    machines: Dict[str, Machine]
-    machine_settings_available: List[MachineSettings]
+    enable_quality: bool = False
+    enable_recycling: bool = False
+    machine_time_cost: float = 1.0
+    resource_base_cost: float = 1.0
+    machines: dict[str, Machine]
+    machine_settings_available: list[MachineSettings]
     mining_productivity: Bonus
+    recipe_bonuses: BonusMap
+    recipes: list[Recipe]
 
 
-BASE_RESOURCE = Item("resource", is_fluid=True)
+BASE_RESOURCE = Item(name="resource")
 
 
-def _OutputMaps(products) -> Tuple[ItemCounts, ItemCounts]:
+def _OutputMaps(products) -> tuple[ItemCounts, ItemCounts]:
     outputs = {}
     outputs_no_prod = {}
     for product in products:
@@ -160,17 +181,20 @@ def _OutputMaps(products) -> Tuple[ItemCounts, ItemCounts]:
         if expected is None:
             expected = (product["amount_min"] + product["amount_max"]) * 0.5
         expected *= product.get("probability", 1.0)
-        item = Item(product["name"], is_fluid=product["type"] == "fluid")
+        item = Item(name=product["name"], is_fluid=product["type"] == "fluid")
         if product.get("ignored_by_productivity", 0) > expected:
             outputs[item] = 0
             outputs_no_prod[item] = expected
-        else:
+        elif product.get("ignored_by_productivity", 0) > 0:
             outputs[item] = expected - product.get("ignored_by_productivity", 0)
             outputs_no_prod[item] = product.get("ignored_by_productivity", 0)
+        else:
+            outputs[item] = expected
+
     return outputs, outputs_no_prod
 
 
-def LoadDataDumpRecipes(prototypes: Dict[Any, Any]) -> List[Recipe]:
+def LoadDataDumpRecipes(prototypes: dict[Any, Any]) -> list[Recipe]:
     recipes = []
 
     for r in prototypes["resource"].values():
@@ -178,12 +202,12 @@ def LoadDataDumpRecipes(prototypes: Dict[Any, Any]) -> List[Recipe]:
         inputs = {BASE_RESOURCE: 1}
         if "required_fluid" in minable:
             # Not sure why the prototype says 10x the actual fluid needed...
-            inputs[Fluid(minable["required_fluid"])] = minable["fluid_amount"] * 0.1
+            inputs[Fluid(name=minable["required_fluid"])] = minable["fluid_amount"] * 0.1
         if "results" in minable:
             outputs, outputs_no_prod = _OutputMaps(minable["results"])
         else:
             outputs = {}
-            outputs[Item(minable["result"])] = float(minable.get("count", 1))
+            outputs[Item(name=minable["result"])] = float(minable.get("count", 1))
             outputs_no_prod = {}
         recipes.append(
             Recipe(
@@ -205,12 +229,12 @@ def LoadDataDumpRecipes(prototypes: Dict[Any, Any]) -> List[Recipe]:
         inputs = {BASE_RESOURCE: 1}
         if "required_fluid" in minable:
             # Not sure why the prototype says 10x the actual fluid needed...
-            inputs[Fluid(minable["required_fluid"])] = minable["fluid_amount"] * 0.1
+            inputs[Fluid(name=minable["required_fluid"])] = minable["fluid_amount"] * 0.1
         if "results" in minable:
             outputs, outputs_no_prod = _OutputMaps(minable["results"])
         else:
             outputs = {}
-            outputs[Item(minable["result"])] = float(minable.get("count", 1))
+            outputs[Item(name=minable["result"])] = float(minable.get("count", 1))
             outputs_no_prod = {}
         recipes.append(
             Recipe(
@@ -234,12 +258,12 @@ def LoadDataDumpRecipes(prototypes: Dict[Any, Any]) -> List[Recipe]:
         inputs = {BASE_RESOURCE: 1}
         if "required_fluid" in minable:
             # Not sure why the prototype says 10x the actual fluid needed...
-            inputs[Fluid(minable["required_fluid"])] = minable["fluid_amount"] * 0.1
+            inputs[Fluid(name=minable["required_fluid"])] = minable["fluid_amount"] * 0.1
         if "results" in minable:
             outputs, outputs_no_prod = _OutputMaps(minable["results"])
         else:
             outputs = {}
-            outputs[Item(minable["result"])] = float(minable.get("count", 1))
+            outputs[Item(name=minable["result"])] = float(minable.get("count", 1))
             outputs_no_prod = {}
         recipes.append(
             Recipe(
@@ -257,7 +281,7 @@ def LoadDataDumpRecipes(prototypes: Dict[Any, Any]) -> List[Recipe]:
         )
 
     for r in prototypes["recipe"].values():
-        inputs = {Item(i["name"], is_fluid=i["type"] == "fluid"): i["amount"] for i in r.get("ingredients", [])}
+        inputs = {Item(name=i["name"], is_fluid=i["type"] == "fluid"): i["amount"] for i in r.get("ingredients", [])}
         results = r.get("results", [])
         outputs, outputs_no_prod = _OutputMaps(results)
         recipes.append(
@@ -301,7 +325,7 @@ def LoadDataDumpRecipes(prototypes: Dict[Any, Any]) -> List[Recipe]:
     return recipes
 
 
-def LoadDataDumpMachines(prototypes: Dict[Any, Any]) -> Dict[str, Machine]:
+def LoadDataDumpMachines(prototypes: dict[Any, Any]) -> dict[str, Machine]:
     machines = {}
     for m in itertools.chain(
         prototypes["assembling-machine"].values(), prototypes["furnace"].values(), prototypes["mining-drill"].values()
@@ -368,17 +392,17 @@ def MakeDefaultConfiguration() -> Configuration:
         recipe_bonuses={
             "steel-plate": 10 * Bonus(name="steel_productivity", productivity=0.1),
             "casting-steel": 10 * Bonus(name="steel_productivity", productivity=0.1),
-            "low-density_structure": 10 * Bonus(name="steel_productivity", productivity=0.1),
-            "casting-low-density_structure": 10 * Bonus(name="steel_productivity", productivity=0.1),
+            "low-density_structure": 10 * Bonus(name="lds_productivity", productivity=0.1),
+            "casting-low-density_structure": 10 * Bonus(name="lds_productivity", productivity=0.1),
             # TODO: rest of these
         },
         machines=machines,
         machine_settings_available=[
-            MachineSettings(
-                name="none",
-                num_beacons=0,
-                module=ZERO_BONUS,
-            ),
+            # MachineSettings(
+            #     name="none",
+            #     num_beacons=0,
+            #     module=ZERO_BONUS,
+            # ),
             MachineSettings(
                 name="quality",
                 num_beacons=0,
@@ -404,13 +428,6 @@ def MakeDefaultConfiguration() -> Configuration:
 
 
 if __name__ == "__main__":
-    with open("data-raw-dump.json") as f:
-        prototypes = json.load(f)
-    recipes = LoadDataDumpRecipes(prototypes)
-    recipe_names = [r.name for r in recipes]
-    recipe_names.sort()
-    pprint(recipe_names)
-
-    machines = LoadDataDumpMachines(prototypes)
-    machine_names = {category: machine.name for category, machine in machines.items()}
-    pprint(machine_names)
+    config = MakeDefaultConfiguration()
+    with open("default-config.json", "w") as f:
+        f.write(config.model_dump_json(indent=2))

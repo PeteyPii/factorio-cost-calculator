@@ -1,12 +1,8 @@
-import dataclasses
 import math
 from collections import defaultdict
-from enum import Enum
 from pprint import pprint
-from typing import Dict, List, Tuple
 
 import gravis as gv
-
 from model import (
     BASE_RESOURCE,
     ZERO_BONUS,
@@ -16,9 +12,10 @@ from model import (
     Fluid,
     Item,
     ItemCounts,
+    ItemKey,
     Machine,
     MachineSettings,
-    MakeDefaultConfiguration,
+    MakeItem,
     Recipe,
 )
 
@@ -56,10 +53,8 @@ class Transformation:
         for item, count in recipe.inputs.items():
             self.inputs_per_sec[item] = count * rate
 
-        productivty_multiplier = _Clamp(
-            1.0 + machine.base_effect.productivity + extra_effects.productivity, 0, 1.0 + recipe.max_productivity
-        )
-        zero_quality_output_rate: ItemCounts = defaultdict(int)
+        productivty_multiplier = _Clamp(1.0 + extra_effects.productivity, 0, 1.0 + recipe.max_productivity)
+        zero_quality_output_rate: ItemCounts = defaultdict(float)
         for item, count in recipe.outputs.items():
             zero_quality_output_rate[item] = count * rate * productivty_multiplier
         for item, count in recipe.outputs_no_productivity.items():
@@ -80,12 +75,12 @@ class Transformation:
 
         quality = _Clamp(extra_effects.quality, 0, math.inf)
         self.outputs_per_sec: ItemCounts = {
-            Item(i.name, recipe.quality): rate * (1 - quality)
+            Item(name=i.name, quality=recipe.quality): rate * (1 - quality)
             for (i, rate) in zero_quality_output_rate.items()
             if not i.is_fluid
         }
         self.outputs_per_sec.update(
-            {Fluid(i.name): rate for (i, rate) in zero_quality_output_rate.items() if i.is_fluid}
+            {Fluid(name=i.name): rate for (i, rate) in zero_quality_output_rate.items() if i.is_fluid}
         )
 
         if quality:
@@ -98,7 +93,7 @@ class Transformation:
 
                 self.outputs_per_sec.update(
                     {
-                        Item(i.name, curr_quality): rate * curr_multi
+                        Item(name=i.name, quality=curr_quality): rate * curr_multi
                         for (i, rate) in zero_quality_output_rate.items()
                         if not i.is_fluid
                     }
@@ -111,19 +106,25 @@ class Transformation:
         return f"{self.name}"
 
 
-def generate_quality_recipes(recipes: List[Recipe]):
+def generate_quality_recipes(recipes: list[Recipe]):
     result_recipes = []
     for recipe in recipes:
         no_quality_recipe = all(i.is_fluid for i in recipe.outputs) or all(i.is_fluid for i in recipe.inputs)
         if not no_quality_recipe:
             for quality in range(Item.MIN_QUALITY, Item.MAX_QUALITY + 1):
                 result_recipes.append(
-                    dataclasses.replace(
-                        recipe,
-                        name=f"{recipe.name}-q{quality}",
-                        inputs={Item(i.name, quality, i.is_fluid): count for (i, count) in recipe.inputs.items()},
-                        outputs={Item(i.name, quality, i.is_fluid): count for (i, count) in recipe.outputs.items()},
-                        quality=quality,
+                    recipe.model_copy(
+                        deep=True,
+                        update={
+                            "name": f"{recipe.name}-q{quality}",
+                            "inputs": {
+                                MakeItem(i.name, quality, i.is_fluid): count for (i, count) in recipe.inputs.items()
+                            },
+                            "outputs": {
+                                MakeItem(i.name, quality, i.is_fluid): count for (i, count) in recipe.outputs.items()
+                            },
+                            "quality": quality,
+                        },
                     )
                 )
         else:
@@ -131,54 +132,35 @@ def generate_quality_recipes(recipes: List[Recipe]):
     return result_recipes
 
 
-class QualityByproductStrategy(Enum):
-    IGNORE = 1
-    COUNT_HIGHER_EQUALLY = 2
-
-
 class Controller:
 
-    def __init__(
-        self,
-        config: Configuration,
-        allow_quality: bool = False,
-        allow_recycling: bool = False,
-        quality_byproduct_strategy: QualityByproductStrategy = QualityByproductStrategy.IGNORE,
-        machine_time_cost: float = 1,
-        resource_base_cost: float = 0,
-    ):
+    def __init__(self, config: Configuration):
         self.config = config
-        self.machine_time_cost = machine_time_cost
-        self.resource_base_cost = resource_base_cost
-        self.allow_recycling = allow_recycling
-        self.quality_byproduct_strategy = quality_byproduct_strategy
-
-        self.machine_map = {machine.name: machine for machine in config.machines.values()}
 
         recipes = config.recipes
-        if allow_quality:
+        if config.enable_quality:
             recipes = generate_quality_recipes(recipes)
 
-        if allow_recycling:
+        if config.enable_recycling:
             self.recipe_map = {recipe.name: recipe for recipe in recipes}
         else:
             self.recipe_map = {
                 recipe.name: recipe for recipe in recipes if "-recycling" not in recipe.name or "scrap" in recipe.name
             }
 
-        self.transformations: List[Transformation] = []
+        self.transformations: list[Transformation] = []
         for recipe in self.recipe_map.values():
             for machine_settings in config.machine_settings_available:
-                if machine_settings.module.productivity > 0 and not recipe.allow_productivity:
+                uses_prod_modules = machine_settings.module.productivity > 0 or (
+                    machine_settings.beacon and machine_settings.beacon.effect.productivity > 0
+                )
+                if uses_prod_modules and not recipe.allow_productivity:
                     continue
 
-                if machine_settings.module.quality > 0 and not recipe.allow_quality:
-                    continue
-
-                if not allow_quality and (
-                    machine_settings.module.quality > 0
-                    or (machine_settings.beacon and machine_settings.beacon.effect.quality > 0)
-                ):
+                uses_quality_modules = machine_settings.module.quality > 0 or (
+                    machine_settings.beacon and machine_settings.beacon.effect.quality > 0
+                )
+                if uses_quality_modules and (not self.config.enable_quality or not recipe.allow_quality):
                     continue
 
                 if recipe.category not in config.machines:
@@ -191,23 +173,22 @@ class Controller:
                         machine=config.machines[recipe.category],
                         machine_settings=machine_settings,
                         recipe_bonuses=config.recipe_bonuses,
+                        mining_bonus=config.mining_productivity,
                     )
                 )
 
-    def compute_all_costs(
-        self, iterations=100
-    ) -> Tuple[Dict[Item, float], Dict[Item, List[Tuple[float, Transformation]]]]:
-        item_costs: Dict[Item, float] = {}
+    def compute_all_costs(self, iterations=100) -> tuple[ItemCounts, dict[ItemKey, list[tuple[float, Transformation]]]]:
+        item_costs: dict[ItemKey, float] = {}
 
         for transformation in self.transformations:
             for item in transformation.inputs_per_sec:
-                item_costs[item] = self.resource_base_cost
+                item_costs[item] = self.config.resource_base_cost
             for item in transformation.outputs_per_sec:
-                item_costs[item] = self.resource_base_cost
+                item_costs[item] = self.config.resource_base_cost
 
         def iterate(return_transforms: bool = False):
             nonlocal item_costs
-            item_to_weighted_transforms: Dict[Item, List[Tuple[float, Transformation]]] = {}
+            item_to_weighted_transforms: dict[ItemKey, list[tuple[float, Transformation]]] = {}
             new_costs = {}
             for transformation in self.transformations:
                 total_input_cost = sum(
@@ -218,7 +199,7 @@ class Controller:
                 )
                 for item, count in transformation.outputs_per_sec.items():
                     discount = 0
-                    if self.allow_recycling:
+                    if self.config.enable_recycling:
                         for i, c in transformation.outputs_per_sec.items():
                             if item.name == i.name and item.quality > i.quality:
                                 discount += item_costs[i] * c
@@ -227,18 +208,19 @@ class Controller:
                         discount *= 0.25
                         discount *= total_input_cost / total_output_cost if total_output_cost else 0
 
-                    if self.quality_byproduct_strategy == QualityByproductStrategy.COUNT_HIGHER_EQUALLY:
-                        count = sum(
-                            c
-                            for (i, c) in transformation.outputs_per_sec.items()
-                            if i.name == item.name and i.quality >= item.quality
-                        )
-                    time_cost = self.machine_time_cost
+                    # Always assume higher quality byproducts of the same item are at-least as good
+                    # as the item we're considering
+                    count = sum(
+                        c
+                        for (i, c) in transformation.outputs_per_sec.items()
+                        if i.name == item.name and i.quality >= item.quality
+                    )
+                    time_cost = self.config.machine_time_cost
                     if transformation.recipe.is_mining:
                         time_cost *= 10
                     new_item_value = (time_cost + total_input_cost - discount) / count
 
-                    if new_item_value < new_costs.get(item, float("inf")):
+                    if new_item_value < new_costs.get(item, math.inf):
                         new_costs[item] = new_item_value
 
                     if return_transforms:
@@ -248,8 +230,8 @@ class Controller:
 
             for item in item_costs:
                 if item not in new_costs:
-                    new_costs[item] = float("inf")
-            new_costs[BASE_RESOURCE] = self.resource_base_cost
+                    new_costs[item] = math.inf
+            new_costs[BASE_RESOURCE] = self.config.resource_base_cost
             item_costs = new_costs
 
             if not return_transforms:
@@ -269,7 +251,7 @@ class Controller:
         return item_costs, item_to_weighted_transforms
 
     def display_graph(
-        self, item_costs: Dict[Item, float], item_to_weighted_transforms: Dict[Item, List[Tuple[float, Transformation]]]
+        self, item_costs: ItemCounts, item_to_weighted_transforms: dict[ItemKey, list[tuple[float, Transformation]]]
     ):
         graph = {
             "directed": True,
@@ -377,13 +359,8 @@ def main():
 
 
 if __name__ == "__main__":
-    controller = Controller(
-        MakeDefaultConfiguration(),
-        resource_base_cost=1,
-        machine_time_cost=1,
-        allow_recycling=False,
-        allow_quality=False,
-        quality_byproduct_strategy=QualityByproductStrategy.COUNT_HIGHER_EQUALLY,
-    )
+    with open("default-config.json") as f:
+        config = Configuration.model_validate_json(f.read())
 
+    controller = Controller(config)
     controller.display_graph(*controller.compute_all_costs())
