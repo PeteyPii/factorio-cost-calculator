@@ -1,23 +1,9 @@
 import math
 from collections import defaultdict
-from pprint import pprint
 
 import gravis as gv
-from model import (
-    BASE_RESOURCE,
-    ZERO_BONUS,
-    Bonus,
-    BonusMap,
-    Configuration,
-    Fluid,
-    Item,
-    ItemCounts,
-    ItemKey,
-    Machine,
-    MachineSettings,
-    MakeItem,
-    Recipe,
-)
+import model
+from pydantic import BaseModel
 
 
 def _Clamp(val, min, max):
@@ -26,35 +12,41 @@ def _Clamp(val, min, max):
     return min if val < min else max if val > max else val
 
 
+class ItemCost(BaseModel):
+    item: model.Item
+    cost: float
+    transformation_costs: list[tuple[str, float]] = []
+
+
 class Transformation:
 
     def __init__(
         self,
         name: str,
-        recipe: Recipe,
-        recipe_bonuses: BonusMap,
-        machine: Machine,
-        machine_settings: MachineSettings,
-        mining_bonus: Bonus,
+        recipe: model.Recipe,
+        recipe_bonuses: model.BonusMap,
+        machine: model.Machine,
+        machine_settings: model.MachineSettings,
+        mining_bonus: model.Bonus,
     ):
         self.name = name
         self.recipe = recipe
         self.machine = machine
         self.machine_settings = machine_settings
 
-        extra_effects = machine_settings.effect_total(machine) + recipe_bonuses.get(recipe.name, ZERO_BONUS)
+        extra_effects = machine_settings.effect_total(machine) + recipe_bonuses.get(recipe.name, model.ZERO_BONUS)
         if recipe.is_mining:
             extra_effects += mining_bonus
 
         speed_multiplier = _Clamp(1.0 + extra_effects.speed, 0.2, math.inf)
         rate = machine.speed * speed_multiplier / recipe.time
 
-        self.inputs_per_sec: ItemCounts = {}
+        self.inputs_per_sec: model.ItemCounts = {}
         for item, count in recipe.inputs.items():
             self.inputs_per_sec[item] = count * rate
 
         productivty_multiplier = _Clamp(1.0 + extra_effects.productivity, 0, 1.0 + recipe.max_productivity)
-        zero_quality_output_rate: ItemCounts = defaultdict(float)
+        zero_quality_output_rate: model.ItemCounts = defaultdict(float)
         for item, count in recipe.outputs.items():
             zero_quality_output_rate[item] = count * rate * productivty_multiplier
         for item, count in recipe.outputs_no_productivity.items():
@@ -74,26 +66,26 @@ class Transformation:
                 del self.inputs_per_sec[catalyst]
 
         quality = _Clamp(extra_effects.quality, 0, math.inf)
-        self.outputs_per_sec: ItemCounts = {
-            Item(name=i.name, quality=recipe.quality): rate * (1 - quality)
+        self.outputs_per_sec: model.ItemCounts = {
+            model.Item(name=i.name, quality=recipe.quality): rate * (1 - quality)
             for (i, rate) in zero_quality_output_rate.items()
             if not i.is_fluid
         }
         self.outputs_per_sec.update(
-            {Fluid(name=i.name): rate for (i, rate) in zero_quality_output_rate.items() if i.is_fluid}
+            {model.Fluid(name=i.name): rate for (i, rate) in zero_quality_output_rate.items() if i.is_fluid}
         )
 
         if quality:
             left_over = quality
             curr_multi = quality * 0.9
             curr_quality = recipe.quality + 1
-            while curr_quality <= Item.MAX_QUALITY:
-                if curr_quality == Item.MAX_QUALITY:
+            while curr_quality <= model.Item.MAX_QUALITY:
+                if curr_quality == model.Item.MAX_QUALITY:
                     curr_multi = left_over
 
                 self.outputs_per_sec.update(
                     {
-                        Item(name=i.name, quality=curr_quality): rate * curr_multi
+                        model.Item(name=i.name, quality=curr_quality): rate * curr_multi
                         for (i, rate) in zero_quality_output_rate.items()
                         if not i.is_fluid
                     }
@@ -106,22 +98,24 @@ class Transformation:
         return f"{self.name}"
 
 
-def generate_quality_recipes(recipes: list[Recipe]):
+def generate_quality_recipes(recipes: list[model.Recipe]):
     result_recipes = []
     for recipe in recipes:
         no_quality_recipe = all(i.is_fluid for i in recipe.outputs) or all(i.is_fluid for i in recipe.inputs)
         if not no_quality_recipe:
-            for quality in range(Item.MIN_QUALITY, Item.MAX_QUALITY + 1):
+            for quality in range(model.Item.MIN_QUALITY, model.Item.MAX_QUALITY + 1):
                 result_recipes.append(
                     recipe.model_copy(
                         deep=True,
                         update={
                             "name": f"{recipe.name}-q{quality}",
                             "inputs": {
-                                MakeItem(i.name, quality, i.is_fluid): count for (i, count) in recipe.inputs.items()
+                                model.MakeItem(i.name, quality, i.is_fluid): count
+                                for (i, count) in recipe.inputs.items()
                             },
                             "outputs": {
-                                MakeItem(i.name, quality, i.is_fluid): count for (i, count) in recipe.outputs.items()
+                                model.MakeItem(i.name, quality, i.is_fluid): count
+                                for (i, count) in recipe.outputs.items()
                             },
                             "quality": quality,
                         },
@@ -134,7 +128,7 @@ def generate_quality_recipes(recipes: list[Recipe]):
 
 class Controller:
 
-    def __init__(self, config: Configuration):
+    def __init__(self, config: model.Configuration):
         self.config = config
 
         recipes = config.recipes
@@ -177,8 +171,8 @@ class Controller:
                     )
                 )
 
-    def compute_all_costs(self, iterations=100) -> tuple[ItemCounts, dict[ItemKey, list[tuple[float, Transformation]]]]:
-        item_costs: dict[ItemKey, float] = {}
+    def compute_all_costs(self, iterations=100) -> list[ItemCost]:
+        item_costs: dict[model.ItemKey, float] = {}
 
         for transformation in self.transformations:
             for item in transformation.inputs_per_sec:
@@ -188,7 +182,7 @@ class Controller:
 
         def iterate(return_transforms: bool = False):
             nonlocal item_costs
-            item_to_weighted_transforms: dict[ItemKey, list[tuple[float, Transformation]]] = {}
+            item_to_weighted_transforms: dict[model.ItemKey, list[tuple[float, str]]] = {}
             new_costs = {}
             for transformation in self.transformations:
                 total_input_cost = sum(
@@ -226,33 +220,37 @@ class Controller:
                     if return_transforms:
                         if item not in item_to_weighted_transforms:
                             item_to_weighted_transforms[item] = []
-                        item_to_weighted_transforms[item].append((new_item_value, transformation))
+                        item_to_weighted_transforms[item].append((transformation.name, new_item_value))
 
             for item in item_costs:
                 if item not in new_costs:
                     new_costs[item] = math.inf
-            new_costs[BASE_RESOURCE] = self.config.resource_base_cost
+            new_costs[model.BASE_RESOURCE] = self.config.resource_base_cost
             item_costs = new_costs
 
             if not return_transforms:
                 return None
 
             for item, transformation_list in item_to_weighted_transforms.items():
-                transformation_list.sort(key=lambda t: t[0])
+                transformation_list.sort(key=lambda t: t[1])
             return item_to_weighted_transforms
 
         for _ in range(iterations):
             iterate()
 
         item_to_weighted_transforms = iterate(return_transforms=True)
-        table = [(k, v) for k, v in item_costs.items()]
-        table.sort(key=lambda x: x[1])
-        pprint(table)
-        return item_costs, item_to_weighted_transforms
 
-    def display_graph(
-        self, item_costs: ItemCounts, item_to_weighted_transforms: dict[ItemKey, list[tuple[float, Transformation]]]
-    ):
+        item_costs_list = []
+        for item in item_costs:
+            item_costs_list.append(
+                ItemCost(
+                    item=item, cost=item_costs[item], transformation_costs=item_to_weighted_transforms.get(item, [])
+                )
+            )
+
+        return item_costs_list
+
+    def display_graph(self, item_costs: list[ItemCost]):
         graph = {
             "directed": True,
             "metadata": {
@@ -268,8 +266,8 @@ class Controller:
             },
         }
         graph["nodes"] = {
-            f"item={item}": {
-                "label": str(item),
+            f"item={item_cost.item}": {
+                "label": str(item_cost.item),
                 "metadata": {
                     "shape": "circle",
                     # "hover": "$label",
@@ -279,7 +277,7 @@ class Controller:
                 },
                 # "node_hover"
             }
-            for (item, cost) in item_costs.items()
+            for item_cost in item_costs
         }
         graph["nodes"].update(
             {
@@ -325,12 +323,12 @@ class Controller:
                 }
             )
 
-        for item, weighted_transforms in item_to_weighted_transforms.items():
-            for i, (cost, transformation) in enumerate(weighted_transforms):
+        for item_cost in item_costs:
+            for transformation_name, cost in item_cost.transformation_costs:
                 edges.append(
                     {
-                        "source": f"transformation={transformation.name}",
-                        "target": f"item={item}",
+                        "source": f"transformation={transformation_name}",
+                        "target": f"item={item_cost.item}",
                         "label": f"{cost:0.3f}",
                         "metadata": {},
                     }
@@ -360,7 +358,7 @@ def main():
 
 if __name__ == "__main__":
     with open("default-config.json") as f:
-        config = Configuration.model_validate_json(f.read())
+        config = model.Configuration.model_validate_json(f.read())
 
     controller = Controller(config)
-    controller.display_graph(*controller.compute_all_costs())
+    controller.display_graph(controller.compute_all_costs())

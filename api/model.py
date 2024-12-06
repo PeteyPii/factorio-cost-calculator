@@ -2,7 +2,7 @@ import itertools
 import json
 import math
 import re
-from typing import Annotated, Any, ClassVar, Optional, Self
+from typing import Annotated, Any, ClassVar, Self
 
 from pydantic import (
     BaseModel,
@@ -148,7 +148,7 @@ class MachineSettings(BaseModel):
     name: str
     module: Bonus  # only one type of module per machine
     num_beacons: int = 0
-    beacon: Optional[Beacon] = None
+    beacon: Beacon | None = None
 
     def effect_total(self, machine: Machine) -> Bonus:
         effect = machine.base_effect + self.module * machine.module_slots
