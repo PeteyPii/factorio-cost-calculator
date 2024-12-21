@@ -2,53 +2,84 @@
 
 import VTable from 'vtbl';
 
-import { onMounted, ref } from 'vue';
+import { ref, watchEffect } from 'vue';
 
-const users = ref([]);
-const orderBy = ref(['id', 'asc'] as [string, 'asc' | 'desc']);
+defineOptions({
+  inheritAttrs: false
+})
 
-onMounted(async () => {
-    const response = await fetch('https://jsonplaceholder.typicode.com/users');
+const fields = defineModel<string[]>('fields', {
+  required: true,
+})
 
-    users.value = await response.json();
-    reorder();
-});
+const items = defineModel<any[]>('items', {
+  required: true,
+})
 
-function reorder() {
-    if (orderBy.value[0] == 'id') {
-        users.value.sort((a, b) => a[orderBy.value[0]] - b[orderBy.value[0]])
-    } else {
-        users.value.sort((a: any, b: any) => a[orderBy.value[0]].localeCompare(b[orderBy.value[0]]))
+const orderBy = ref(['', 'asc'] as [string, 'asc' | 'desc']);
+
+watchEffect(() => {
+  if (orderBy.value[0] == '') {
+    return
+  }
+
+  items.value.sort((a, b) => {
+    const parts = orderBy.value[0].split('.')
+    for (const part of parts) {
+      if (a != null) {
+        a = a[part]
+      }
+      if (b != null) {
+        b = b[part]
+      }
     }
 
-    if (orderBy.value[1] == 'desc') {
-        users.value.reverse();
+    if (a == null && b == null) {
+      return 0
     }
-}
+
+    if (a == null || b == null) {
+      return a < b ? -1 : 1
+    }
+
+    if (typeof a === 'number') {
+      return a - b
+    }
+
+    return a.localeCompare(b)
+  })
+
+  if (orderBy.value[1] == 'desc') {
+    items.value.reverse()
+  }
+})
 </script>
 
 <template>
-  <VTable :items="users" :orderable="['id', 'name', 'username']" v-model:order-by="orderBy" @update:orderBy="reorder" :fields="(['id', 'name', 'username'])" class="w-full"  />
+  <div class="p-4">
+    <VTable :items="items" :orderable="fields" v-model:order-by="orderBy" :fields="fields" v-bind="$attrs" />
+  </div>
 </template>
 
 <style lang="postcss">
 .v-table {
-    @apply text-sm;
+  @apply text-sm;
 }
 
 .v-table th {
-    @apply p-2 bg-blue-500 text-white capitalize;
+  @apply p-2 bg-blue-500 text-white capitalize;
+  text-align: left;
 }
 
 .v-table tr {
-    @apply border-t border-blue-100 first-of-type:border-none;
+  @apply border-t border-blue-100 first-of-type:border-none;
 }
 
 .v-table tr:nth-child(even) {
-    @apply bg-blue-900/5;
+  @apply bg-zinc-500/10;
 }
 
 .v-table td {
-    @apply p-3;
+  @apply p-3;
 }
 </style>
