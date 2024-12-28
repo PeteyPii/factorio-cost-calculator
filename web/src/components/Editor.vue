@@ -16,8 +16,11 @@ import 'vanilla-jsoneditor/themes/jse-theme-dark.css'
 </template>
 
 <style lang="postcss">
-* {
+.jse-main,
+.jse-modal {
+  --jse-font-size-mono: 16px;
   --jse-main-border: 0;
   --jse-background-color: theme(colors.zinc.800);
+  --jse-theme-color: theme(colors.blue.500)
 }
 </style>

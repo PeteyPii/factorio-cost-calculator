@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, watchEffect } from 'vue'
 
-import Editor from './components/Editor.vue'
-import Table from './components/Table.vue'
+import Editor from '@/components/Editor.vue'
+import Table from '@/components/Table.vue'
+import CostCell from '@/components/CostCell.vue'
 
-import defaultConfig from './configs/default.json'
+import defaultConfig from '@/configs/default.json'
 
 const config = ref(defaultConfig)
 const headers = ['item.name', 'cost']
@@ -55,10 +56,16 @@ function prettifyCost(c: number | undefined) {
         'item.name': 'left', 'cost': 'left'
       }" :title="{
         'item.name': 'Item'
-      }" :map="{
-        'item.name': prettifyItemName,
-        cost: prettifyCost,
-      }"></Table>
+      }">
+        <template #item.name="{ item }">
+          <td>{{ prettifyItemName(item.item.name) }}</td>
+        </template>
+        <template #cost="{ item }">
+          <td>
+            <CostCell :cost="(item.cost as number)" :transformationCosts="(item.transformation_costs as any[])" />
+          </td>
+        </template>
+      </Table>
     </div>
   </div>
 
