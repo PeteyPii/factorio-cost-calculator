@@ -50,7 +50,7 @@ const qualityNames: any = {
   2: 'Uncommon',
   3: 'Rare',
   4: 'Epic',
-  5: 'Legenedary',
+  5: 'Legendary',
 }
 
 function prettyItemName(item: any) {
@@ -114,6 +114,7 @@ function prettyItemName(item: any) {
 
 .editor-container .editor {
   flex: 1 1 auto;
+  min-height: 0;
 }
 
 .editor-container button {

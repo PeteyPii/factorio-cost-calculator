@@ -101,7 +101,11 @@ class Transformation:
 def generate_quality_recipes(recipes: list[model.Recipe]):
     result_recipes = []
     for recipe in recipes:
-        no_quality_recipe = all(i.is_fluid for i in recipe.outputs) or all(i.is_fluid for i in recipe.inputs)
+        no_quality_recipe = (
+            all(i.is_fluid for i in recipe.outputs)
+            or all(i.is_fluid for i in recipe.inputs)
+            or model.BASE_RESOURCE in recipe.inputs
+        )
         if not no_quality_recipe:
             for quality in range(model.Item.MIN_QUALITY, model.Item.MAX_QUALITY + 1):
                 result_recipes.append(
@@ -357,8 +361,12 @@ def main():
 
 
 if __name__ == "__main__":
-    with open("default-config.json") as f:
-        config = model.Configuration.model_validate_json(f.read())
+    try:
+        with open("default-config.json") as f:
+            config = model.Configuration.model_validate_json(f.read())
+    except IOError:
+        with open("api/default-config.json") as f:
+            config = model.Configuration.model_validate_json(f.read())
 
     controller = Controller(config)
     controller.display_graph(controller.compute_all_costs())
