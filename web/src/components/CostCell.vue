@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-// import { For} from 'for'
-import { ChevronDownIcon } from '@heroicons/vue/24/solid'
-import { ChevronUpIcon } from '@heroicons/vue/24/solid'
+import { ChevronDownIcon, ChevronUpIcon } from '@heroicons/vue/24/solid'
 
 const props = defineProps<{
   cost: number | null,
@@ -20,7 +18,6 @@ function prettifyCost(c: number | null) {
   return c.toFixed(3);
 }
 </script>
-
 
 <template>
   <div class="cost-cell hover:cursor-pointer" @mouseenter="isHovered = true" @mouseleave="isHovered = false"

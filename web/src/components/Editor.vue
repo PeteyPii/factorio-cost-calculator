@@ -5,7 +5,7 @@ import 'vanilla-jsoneditor/themes/jse-theme-dark.css'
 </script>
 
 <template>
-  <JsonEditorVue class="jse-theme-dark p-4 h-full" v-bind="{
+  <JsonEditorVue class="editor jse-theme-dark p-4" v-bind="{
     mainMenuBar: true,
     mode: Mode.tree,
     statusBar: true,
