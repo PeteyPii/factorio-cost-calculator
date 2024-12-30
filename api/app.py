@@ -13,7 +13,7 @@ origins = [
     "http://factorio.patrickw.xyz",
     "https://factorio.patrickw.xyz",
     "http://localhost",
-    "http://localhost:8080",
+    "http://localhost:5173",
 ]
 app.add_middleware(
     CORSMiddleware,

@@ -9,7 +9,7 @@ import { ArrowPathRoundedSquareIcon, Cog6ToothIcon } from '@heroicons/vue/24/sol
 import defaultConfig from '@/configs/default.json'
 
 const config = ref(defaultConfig)
-const headers = ['item.name', 'cost']
+const headers = ref(['item.name', 'cost'])
 const rows = ref([])
 const disableRecomputeButton = ref(true)
 const isLoading = ref(true)
@@ -22,7 +22,11 @@ async function recomputeCosts() {
   disableRecomputeButton.value = true
   isLoading.value = true
   try {
-    const response = await fetch('http://localhost:8000/compute_costs', {
+    let url = '/api/compute_costs'
+    if (import.meta.env.DEV) {
+      url = 'http://localhost:8000/api/compute_costs'
+    }
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
