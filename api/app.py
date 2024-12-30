@@ -7,9 +7,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-app = FastAPI()
+app = FastAPI(root_path="/api")
 
-origins = ["*"]
+origins = [
+    "http://factorio.patrickw.xyz",
+    "https://factorio.patrickw.xyz",
+    "http://localhost",
+    "http://localhost:8080",
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
